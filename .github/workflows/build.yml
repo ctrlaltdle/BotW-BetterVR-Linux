@@ -1,0 +1,67 @@
+name: Build BetterVR (Linux)
+
+# This fork ports the layer to Linux and doesn't try to keep the original Windows
+# build working (see LINUX.md) - the previous workflow here built the Windows
+# launcher via vcpkg and will fail forever now that the OpenXR graphics binding
+# switched from D3D12 to Vulkan. This instead builds what this fork actually
+# ships: build-linux/build.sh's BetterVR_Layer.so, on Ubuntu.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 libvulkan-dev libopenxr-dev libopenxr-loader1
+
+      # Ubuntu's libvulkan-dev/libopenxr-dev are both out of sync with what this code
+      # references (confirmed by two separate CI failures): vkroots.h needs very recent
+      # Vulkan extension types, and openxr.cpp needs an OpenXR extension name Ubuntu's
+      # package doesn't have despite having a newer sibling extension. Only need the
+      # headers fresh here - linking against Ubuntu's actual libvulkan.so/libopenxr_loader.so
+      # (from the packages above) doesn't care about header/extension-struct versions.
+      - name: Fetch current Vulkan-Headers and OpenXR-SDK headers
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/Vulkan-Headers"
+          git clone --depth 1 https://github.com/KhronosGroup/OpenXR-SDK "$RUNNER_TEMP/OpenXR-SDK"
+
+      - name: Build BetterVR_Layer.so
+        id: build
+        continue-on-error: true
+        env:
+          CXX: g++-14
+          EXTRA_INCLUDES: -I ${{ runner.temp }}/Vulkan-Headers/include -I ${{ runner.temp }}/OpenXR-SDK/include
+        run: ./build-linux/build.sh
+
+      - name: Show compiler errors
+        if: steps.build.outcome == 'failure'
+        run: |
+          for f in build-linux/obj/*.log; do
+            if grep -q "error:" "$f"; then
+              echo "=== $f ==="
+              cat "$f"
+            fi
+          done
+          exit 1
+
+      - name: Verify output
+        run: test -f build-linux/BetterVR_Layer.so
+
+      - name: Upload BetterVR_Layer.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: BetterVR_Layer
+          path: build-linux/BetterVR_Layer.so
+          if-no-files-found: error
